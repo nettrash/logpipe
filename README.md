@@ -5,7 +5,7 @@ exposes a writable FIFO at `/dev/os-driver` and streams every line written
 to it into a configured [OpenSearch](https://opensearch.org/) index via the
 `_bulk` API.
 
-The Rust implementation lives in [`drv/`](./drv).
+The Rust implementation lives in [`app/`](./app).
 
 ## Usage from the customer's side
 
@@ -49,7 +49,7 @@ Each newline marks a record boundary.
 ```
 .
 ├── README.md
-└── drv/                       # Rust crate
+└── app/                       # Rust crate
     ├── Cargo.toml
     ├── config.example.toml    # Annotated example config
     ├── systemd/
@@ -71,17 +71,17 @@ Requires a recent stable Rust toolchain (1.74+ recommended) on Ubuntu 22.04
 or 24.04.
 
 ```bash
-cd drv
+cd app
 cargo build --release
 ```
 
-The binary will be at `drv/target/release/os-driver`.
+The binary will be at `app/target/release/os-driver`.
 
 ## Installing
 
 ```bash
 # 1. Install the binary
-sudo install -m 0755 drv/target/release/os-driver /usr/local/bin/os-driver
+sudo install -m 0755 app/target/release/os-driver /usr/local/bin/os-driver
 
 # 2. Create the service user
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin os-driver
@@ -89,10 +89,10 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin os-driver
 # 3. Install config and systemd unit
 sudo install -d -o os-driver -g os-driver -m 0750 /etc/os-driver
 sudo install -m 0640 -o os-driver -g os-driver \
-    drv/config.example.toml /etc/os-driver/config.toml
+    app/config.example.toml /etc/os-driver/config.toml
 sudo $EDITOR /etc/os-driver/config.toml
 
-sudo install -m 0644 drv/systemd/os-driver.service \
+sudo install -m 0644 app/systemd/os-driver.service \
     /etc/systemd/system/os-driver.service
 
 # 4. Start it
@@ -147,4 +147,4 @@ mappings — the driver does not create the index for you.
 
 ## License
 
-MIT OR Apache-2.0
+[MIT](./LICENSE)
