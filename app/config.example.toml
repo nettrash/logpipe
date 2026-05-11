@@ -1,6 +1,6 @@
-# Example configuration for os-driver.
+# Example configuration for logpipe.
 #
-# Install location: /etc/os-driver/config.toml
+# Install location: /etc/logpipe/config.toml
 
 [opensearch]
 # Full base URL of the OpenSearch cluster. https:// strongly preferred.
@@ -34,20 +34,20 @@ flush_secs = 5
 # The daemon exposes a single named pipe (FIFO). Any local process that can
 # write to this path can ship a log line:
 #
-#   echo "hello world"          > /dev/os-driver
-#   tail -F /opt/app/app.log    > /dev/os-driver
+#   echo "hello world"          > /dev/logpipe
+#   tail -F /opt/app/app.log    > /dev/logpipe
 #   printf '{"level":"error","message":"oom","tag":"checkout"}\n' \
-#                               > /dev/os-driver
+#                               > /dev/logpipe
 #
 # Plain text lines become {"message": "<line>"} in OpenSearch.
 # Lines that parse as a JSON object are merged into the document, with
 # `message` and `tag` promoted to the document's top-level fields.
 
 [sources.fifo]
-# Where to create the FIFO. /dev/os-driver matches the "device file" mental
-# model; /run/os-driver/in is also fine if you want stricter sandboxing
+# Where to create the FIFO. /dev/logpipe matches the "device file" mental
+# model; /run/logpipe/in is also fine if you want stricter sandboxing
 # (set PrivateDevices=true in the systemd unit too).
-path = "/dev/os-driver"
+path = "/dev/logpipe"
 
 # Permission bits applied on every startup. 0o622 = rw--w--w-: everyone can
 # write, only the daemon reads. Tighten this with a dedicated group if you

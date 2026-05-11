@@ -1,43 +1,43 @@
 [Unit]
-Description=os-driver: stream FIFO writes to OpenSearch
-Documentation=https://github.com/nettrash/os-driver
+Description=logpipe: stream FIFO writes to OpenSearch
+Documentation=https://github.com/nettrash/logpipe
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 
-# Pre-create the FIFO as root so the daemon (running as `os-driver`) can
+# Pre-create the FIFO as root so the daemon (running as `logpipe`) can
 # open it even when the path lives under /dev. The leading `+` runs this
 # step with full privileges, regardless of User=.
 ExecStartPre=+/bin/sh -c '\
-  if [ ! -p /dev/os-driver ]; then \
-    mkfifo -m 0622 /dev/os-driver; \
+  if [ ! -p /dev/logpipe ]; then \
+    mkfifo -m 0622 /dev/logpipe; \
   fi; \
-  chown os-driver:os-driver /dev/os-driver; \
-  chmod 0622 /dev/os-driver'
+  chown logpipe:logpipe /dev/logpipe; \
+  chmod 0622 /dev/logpipe'
 
-ExecStart=/usr/local/bin/os-driver --config /etc/os-driver/config.toml
+ExecStart=/usr/local/bin/logpipe --config /etc/logpipe/config.toml
 
-ExecStopPost=+/bin/sh -c 'rm -f /dev/os-driver'
+ExecStopPost=+/bin/sh -c 'rm -f /dev/logpipe'
 
 Restart=on-failure
 RestartSec=5s
 
 # Run as a dedicated unprivileged user. Create with:
-#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin os-driver
-User=os-driver
-Group=os-driver
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin logpipe
+User=logpipe
+Group=logpipe
 
 # State / config directories (not strictly required for the FIFO model,
 # but useful if you later add buffering on disk).
-StateDirectory=os-driver
+StateDirectory=logpipe
 StateDirectoryMode=0750
-ConfigurationDirectory=os-driver
+ConfigurationDirectory=logpipe
 ConfigurationDirectoryMode=0750
 
 # --- Sandboxing -----------------------------------------------------------
-# NOTE: PrivateDevices=true would hide /dev/os-driver from the rest of the
+# NOTE: PrivateDevices=true would hide /dev/logpipe from the rest of the
 # system, defeating the whole point. If you relocate the FIFO under /run
 # you can flip PrivateDevices back on.
 NoNewPrivileges=true

@@ -1,15 +1,15 @@
 //! FIFO (named-pipe) ingress.
 //!
 //! On startup the daemon makes sure a FIFO exists at the configured path
-//! (default `/dev/os-driver`) and chmods it to the configured mode so that
+//! (default `/dev/logpipe`) and chmods it to the configured mode so that
 //! customer processes can simply do:
 //!
 //! ```sh
-//! echo "hello world" > /dev/os-driver
+//! echo "hello world" > /dev/logpipe
 //! # or:
-//! cat my.log         > /dev/os-driver
+//! cat my.log         > /dev/logpipe
 //! # or programmatically:
-//! open("/dev/os-driver", O_WRONLY)
+//! open("/dev/logpipe", O_WRONLY)
 //! ```
 //!
 //! Each newline-terminated line becomes one OpenSearch document.

@@ -15,7 +15,7 @@
 //! flush_secs = 5
 //!
 //! [sources.fifo]
-//! path = "/dev/os-driver"
+//! path = "/dev/logpipe"
 //! mode = 0o622          # rw--w--w-: everyone can write, only daemon reads
 //! tag  = "customer"     # optional default tag for every line
 //! ```
@@ -86,7 +86,7 @@ pub struct SourcesConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FifoConfig {
-    /// Filesystem path where the FIFO will live. Defaults to /dev/os-driver.
+    /// Filesystem path where the FIFO will live. Defaults to /dev/logpipe.
     #[serde(default = "default_fifo_path")]
     pub path: PathBuf,
 
@@ -157,7 +157,7 @@ fn default_batch_flush_secs() -> u64 {
 }
 
 fn default_fifo_path() -> PathBuf {
-    PathBuf::from("/dev/os-driver")
+    PathBuf::from("/dev/logpipe")
 }
 
 fn default_fifo_mode() -> u32 {

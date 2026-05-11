@@ -1,5 +1,5 @@
-//! os-driver — userspace daemon that exposes a writable FIFO (default
-//! `/dev/os-driver`) and ships every line written to it into a configured
+//! logpipe — userspace daemon that exposes a writable FIFO (default
+//! `/dev/logpipe`) and ships every line written to it into a configured
 //! OpenSearch index.
 
 mod batcher;
@@ -21,10 +21,10 @@ use tracing_subscriber::EnvFilter;
 use crate::config::Config;
 
 #[derive(Parser, Debug)]
-#[command(name = "os-driver", about = "Stream FIFO writes to OpenSearch")]
+#[command(name = "logpipe", about = "Stream FIFO writes to OpenSearch")]
 struct Cli {
     /// Path to the TOML configuration file.
-    #[arg(short, long, default_value = "/etc/os-driver/config.toml")]
+    #[arg(short, long, default_value = "/etc/logpipe/config.toml")]
     config: PathBuf,
 
     /// Log level filter (overrides RUST_LOG).
@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.log_level.as_deref());
 
-    info!(version = env!("CARGO_PKG_VERSION"), "os-driver starting");
+    info!(version = env!("CARGO_PKG_VERSION"), "logpipe starting");
 
     let cfg = Config::load(&cli.config)
         .with_context(|| format!("loading config from {}", cli.config.display()))?;
@@ -116,7 +116,7 @@ async fn main() -> Result<()> {
         warn!("graceful shutdown timed out");
     }
 
-    info!("os-driver stopped");
+    info!("logpipe stopped");
     Ok(())
 }
 

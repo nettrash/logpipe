@@ -1,14 +1,14 @@
 [package]
-name = "os-driver"
+name = "logpipe"
 version = "0.1.0"
 edition = "2021"
 authors = ["nettrash <nettrash@nettrash.me>"]
-description = "Userspace Ubuntu/Linux driver: writes to /dev/os-driver are streamed line-by-line into an OpenSearch endpoint"
+description = "Log-forwarding service for Linux: lines written to the /dev/logpipe named pipe (FIFO) are streamed into an OpenSearch endpoint"
 license = "MIT"
 readme = "../README.md"
 
 [[bin]]
-name = "os-driver"
+name = "logpipe"
 path = "src/main.rs"
 
 [dependencies]
@@ -44,7 +44,7 @@ libc = "0.2"
 anyhow = "1"
 thiserror = "1"
 
-# Logging / tracing for the driver itself
+# Logging / tracing for the service itself
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
