@@ -1,0 +1,64 @@
+[package]
+name = "os-driver"
+version = "0.1.0"
+edition = "2021"
+authors = ["nettrash <nettrash@nettrash.me>"]
+description = "Userspace Ubuntu/Linux driver: writes to /dev/os-driver are streamed line-by-line into an OpenSearch endpoint"
+license = "MIT"
+readme = "../README.md"
+
+[[bin]]
+name = "os-driver"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.38", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "sync",
+    "time",
+    "fs",
+    "io-util",
+    "process",
+] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# HTTP client for OpenSearch _bulk
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "gzip",
+] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Direct mkfifo(2) syscall + unix file-type helpers
+libc = "0.2"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging / tracing for the driver itself
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Time
+time = { version = "0.3", features = ["serde", "formatting", "macros"] }
+
+# Hostname for tagging events
+hostname = "0.4"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3

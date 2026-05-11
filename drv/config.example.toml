@@ -1,0 +1,59 @@
+# Example configuration for os-driver.
+#
+# Install location: /etc/os-driver/config.toml
+
+[opensearch]
+# Full base URL of the OpenSearch cluster. https:// strongly preferred.
+endpoint = "https://opensearch.example.com:9200"
+
+# Index (or data-stream) name. The daemon does NOT create the index;
+# create it (or a matching index template) ahead of time.
+index = "ubuntu-logs"
+
+# HTTP basic-auth credentials. Use a dedicated ingest user with write-only
+# permissions on the index.
+username = "ingest"
+password = "change-me"
+
+# Set to false to allow self-signed certs (development only!).
+verify_tls = true
+
+# Per-request timeout in seconds.
+request_timeout_secs = 30
+
+
+[batch]
+# Maximum events accumulated before a forced flush to _bulk.
+max_events = 500
+# Maximum time between flushes, regardless of fill level.
+flush_secs = 5
+
+
+# ---- Ingress -------------------------------------------------------------
+#
+# The daemon exposes a single named pipe (FIFO). Any local process that can
+# write to this path can ship a log line:
+#
+#   echo "hello world"          > /dev/os-driver
+#   tail -F /opt/app/app.log    > /dev/os-driver
+#   printf '{"level":"error","message":"oom","tag":"checkout"}\n' \
+#                               > /dev/os-driver
+#
+# Plain text lines become {"message": "<line>"} in OpenSearch.
+# Lines that parse as a JSON object are merged into the document, with
+# `message` and `tag` promoted to the document's top-level fields.
+
+[sources.fifo]
+# Where to create the FIFO. /dev/os-driver matches the "device file" mental
+# model; /run/os-driver/in is also fine if you want stricter sandboxing
+# (set PrivateDevices=true in the systemd unit too).
+path = "/dev/os-driver"
+
+# Permission bits applied on every startup. 0o622 = rw--w--w-: everyone can
+# write, only the daemon reads. Tighten this with a dedicated group if you
+# don't want all local users to be able to inject events.
+mode = 0o622
+
+# Default tag attached to every event. Customer-written JSON lines can
+# override it with their own "tag" field.
+tag = "customer"

@@ -1,0 +1,62 @@
+[Unit]
+Description=os-driver: stream FIFO writes to OpenSearch
+Documentation=https://github.com/nettrash/os-driver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Pre-create the FIFO as root so the daemon (running as `os-driver`) can
+# open it even when the path lives under /dev. The leading `+` runs this
+# step with full privileges, regardless of User=.
+ExecStartPre=+/bin/sh -c '\
+  if [ ! -p /dev/os-driver ]; then \
+    mkfifo -m 0622 /dev/os-driver; \
+  fi; \
+  chown os-driver:os-driver /dev/os-driver; \
+  chmod 0622 /dev/os-driver'
+
+ExecStart=/usr/local/bin/os-driver --config /etc/os-driver/config.toml
+
+ExecStopPost=+/bin/sh -c 'rm -f /dev/os-driver'
+
+Restart=on-failure
+RestartSec=5s
+
+# Run as a dedicated unprivileged user. Create with:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin os-driver
+User=os-driver
+Group=os-driver
+
+# State / config directories (not strictly required for the FIFO model,
+# but useful if you later add buffering on disk).
+StateDirectory=os-driver
+StateDirectoryMode=0750
+ConfigurationDirectory=os-driver
+ConfigurationDirectoryMode=0750
+
+# --- Sandboxing -----------------------------------------------------------
+# NOTE: PrivateDevices=true would hide /dev/os-driver from the rest of the
+# system, defeating the whole point. If you relocate the FIFO under /run
+# you can flip PrivateDevices back on.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
