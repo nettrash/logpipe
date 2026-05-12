@@ -14,32 +14,86 @@
 //!
 //! Each newline-terminated line becomes one OpenSearch document.
 //!
-//! ## Why O_RDWR
+//! ## Why O_RDWR | O_NONBLOCK
 //!
 //! POSIX semantics say that when the last *writer* of a FIFO closes its
 //! handle, readers see EOF. That would force us to reopen the FIFO between
 //! every customer write. Linux lets us open a FIFO `O_RDWR` so that the
 //! daemon is itself counted as a writer; that means the read side never
-//! observes EOF and we can keep a single long-lived reader regardless of
-//! how many customer processes come and go.
+//! observes EOF and we can keep a single long-lived reader regardless of how
+//! many customer processes come and go.
+//!
+//! We additionally open it `O_NONBLOCK` and drive it through epoll via
+//! [`AsyncFd`] rather than going through `tokio::fs`. `tokio::fs` performs the
+//! underlying `read(2)` on the runtime's blocking thread pool; since the FIFO
+//! is held open `O_RDWR` that read parks forever whenever no customer is
+//! writing, and cancelling the task only drops the future — the syscall keeps
+//! running and wedges runtime shutdown (and, in turn, `systemctl stop`). With
+//! a non-blocking fd a cancelled read is genuinely cancelled.
 
 use std::ffi::CString;
+use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::unix::AsyncFd;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader, ReadBuf};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::EventTx;
 use crate::config::FifoConfig;
 use crate::event::Event;
+
+/// Async wrapper around a non-blocking FIFO fd, driven by the Tokio reactor's
+/// epoll registration rather than the blocking thread pool. See the module
+/// docs for why this matters for clean shutdown.
+struct AsyncFifo {
+    inner: AsyncFd<std::fs::File>,
+}
+
+impl AsyncFifo {
+    fn new(file: std::fs::File) -> io::Result<Self> {
+        Ok(Self {
+            inner: AsyncFd::new(file)?,
+        })
+    }
+}
+
+impl AsyncRead for AsyncFifo {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        loop {
+            let mut guard = match this.inner.poll_read_ready(cx) {
+                Poll::Ready(Ok(guard)) => guard,
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            };
+            let unfilled = buf.initialize_unfilled();
+            match guard.try_io(|inner| inner.get_ref().read(unfilled)) {
+                Ok(Ok(n)) => {
+                    buf.advance(n);
+                    return Poll::Ready(Ok(()));
+                }
+                Ok(Err(err)) => return Poll::Ready(Err(err)),
+                // `try_io` already cleared readiness on WouldBlock; loop back
+                // to `poll_read_ready`, which will now return `Pending`.
+                Err(_would_block) => continue,
+            }
+        }
+    }
+}
 
 pub async fn run(
     cfg: FifoConfig,
@@ -55,15 +109,19 @@ pub async fn run(
     );
 
     // O_RDWR keeps the FIFO open from our side even when no customer is
-    // currently writing — otherwise we'd see EOF on every disconnect.
-    let file = OpenOptions::new()
+    // currently writing (otherwise we'd see EOF on every disconnect);
+    // O_NONBLOCK lets the reactor poll it instead of parking a blocking thread.
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
+        .custom_flags(libc::O_NONBLOCK)
         .open(&cfg.path)
-        .await
         .with_context(|| format!("opening fifo {}", cfg.path.display()))?;
 
-    let reader = BufReader::new(file);
+    let reader =
+        BufReader::new(AsyncFifo::new(file).with_context(|| {
+            format!("registering fifo {} with the reactor", cfg.path.display())
+        })?);
     let mut lines = reader.lines();
     let default_tag = cfg.tag.clone();
     let fifo_path = cfg.path.clone();
@@ -147,37 +205,56 @@ fn ensure_fifo(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Keys the daemon writes itself onto every document. A customer JSON line
+/// that also contains one of these must not have its copy merged into the
+/// flattened `fields` map — the resulting `_bulk` document would carry the
+/// key twice, and OpenSearch rejects any document with duplicate keys.
+const RESERVED_KEYS: &[&str] = &["@timestamp", "source", "host", "tag", "message", "fifo"];
+
 /// Build an Event from a customer-written line.
 ///
-/// If the line happens to be a JSON object, lift its fields directly into
-/// the OpenSearch document (with `message` and `tag` promoted). Otherwise
-/// treat the entire line as a free-form message.
+/// If the line is a JSON object, its fields are merged into the OpenSearch
+/// document, with a string `message` / `tag` promoted to the document's
+/// top-level fields. Keys the daemon owns ([`RESERVED_KEYS`]) are dropped
+/// rather than merged, so the emitted document never has a duplicate key.
+/// Anything that isn't a JSON object becomes a free-form `message`.
 fn build_event(line: &str, default_tag: Option<&str>, host: &str, fifo: &Path) -> Event {
     let timestamp = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default();
 
     let mut fields = Map::new();
-    fields.insert(
-        "fifo".to_string(),
-        Value::String(fifo.display().to_string()),
-    );
 
     if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(line) {
         let mut tag = default_tag.map(str::to_owned);
         let mut message: Option<String> = None;
         for (k, v) in obj {
-            if k == "message" {
-                if let Value::String(s) = &v {
-                    message = Some(s.clone());
-                }
-            } else if k == "tag" {
-                if let Value::String(s) = &v {
-                    tag = Some(s.clone());
+            match k.as_str() {
+                // Promote when it's a string; otherwise keep it as a field
+                // (Event.message/tag stays None, so still only one key).
+                "message" => match v {
+                    Value::String(s) => message = Some(s),
+                    other => {
+                        fields.insert(k, other);
+                    }
+                },
+                "tag" => match v {
+                    Value::String(s) => tag = Some(s),
+                    other => {
+                        fields.insert(k, other);
+                    }
+                },
+                // Other daemon-owned keys: ignore the customer's copy.
+                _ if RESERVED_KEYS.contains(&k.as_str()) => {}
+                _ => {
+                    fields.insert(k, v);
                 }
             }
-            fields.insert(k, v);
         }
+        fields.insert(
+            "fifo".to_string(),
+            Value::String(fifo.display().to_string()),
+        );
         return Event {
             timestamp,
             source: "fifo",
@@ -188,6 +265,10 @@ fn build_event(line: &str, default_tag: Option<&str>, host: &str, fifo: &Path) -
         };
     }
 
+    fields.insert(
+        "fifo".to_string(),
+        Value::String(fifo.display().to_string()),
+    );
     Event {
         timestamp,
         source: "fifo",

@@ -24,6 +24,10 @@ ExecStopPost=+/bin/sh -c 'rm -f /dev/logpipe'
 Restart=on-failure
 RestartSec=5s
 
+# Bound shutdown. The daemon flushes within ~10s of SIGTERM; if it ever
+# wedges, fall back to SIGKILL instead of waiting out the 90s default.
+TimeoutStopSec=15s
+
 # Run as a dedicated unprivileged user. Create with:
 #   sudo useradd --system --no-create-home --shell /usr/sbin/nologin logpipe
 User=logpipe

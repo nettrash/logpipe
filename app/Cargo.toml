@@ -19,9 +19,8 @@ tokio = { version = "1.38", features = [
     "signal",
     "sync",
     "time",
-    "fs",
+    "net",      # AsyncFd, used to drive the FIFO via epoll
     "io-util",
-    "process",
 ] }
 tokio-util = { version = "0.7", features = ["rt"] }
 

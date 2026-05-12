@@ -73,13 +73,20 @@ impl OpenSearchClient {
                     let status = resp.status();
                     if status.is_success() {
                         let text = resp.text().await.unwrap_or_default();
-                        if let Some(failed) = inspect_bulk_response(&text) {
-                            warn!(
+                        match inspect_bulk_response(&text) {
+                            Some((failed, reason)) if failed >= events.len() => error!(
                                 attempt,
-                                failed, "bulk indexed with item errors (continuing)"
-                            );
-                        } else {
-                            debug!(events = events.len(), "bulk indexed");
+                                failed,
+                                reason = %reason,
+                                "OpenSearch rejected every document in the bulk batch (dropping)"
+                            ),
+                            Some((failed, reason)) => warn!(
+                                attempt,
+                                failed,
+                                reason = %reason,
+                                "bulk indexed with item errors (continuing)"
+                            ),
+                            None => debug!(events = events.len(), "bulk indexed"),
                         }
                         return Ok(());
                     }
@@ -139,21 +146,33 @@ struct BulkResponse {
 }
 
 /// If the bulk response indicates per-item errors, return how many items
-/// failed. `None` means everything was accepted cleanly.
-fn inspect_bulk_response(body: &str) -> Option<usize> {
+/// failed plus a representative `"type: reason"` string for logging. `None`
+/// means everything was accepted cleanly.
+fn inspect_bulk_response(body: &str) -> Option<(usize, String)> {
     let parsed: BulkResponse = serde_json::from_str(body).ok()?;
     if !parsed.errors {
         return None;
     }
-    let failed = parsed
-        .items
-        .iter()
-        .filter(|item| {
-            item.as_object()
-                .and_then(|m| m.values().next())
-                .and_then(|v| v.get("error"))
-                .is_some()
-        })
-        .count();
-    Some(failed)
+    let mut failed = 0usize;
+    let mut sample = String::new();
+    for item in &parsed.items {
+        let Some(err) = item
+            .as_object()
+            .and_then(|m| m.values().next())
+            .and_then(|v| v.get("error"))
+        else {
+            continue;
+        };
+        failed += 1;
+        if sample.is_empty() {
+            let kind = err.get("type").and_then(|v| v.as_str()).unwrap_or("error");
+            let reason = err.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+            sample = format!("{kind}: {reason}");
+        }
+    }
+    if sample.is_empty() {
+        // `errors` was set but we couldn't attribute it — surface the raw body.
+        sample = body.chars().take(400).collect();
+    }
+    Some((failed.max(1), sample))
 }

@@ -117,7 +117,14 @@ async fn main() -> Result<()> {
     }
 
     info!("logpipe stopped");
-    Ok(())
+
+    // Exit explicitly rather than returning. Returning from `main` drops the
+    // Tokio runtime, whose destructor blocks until every `spawn_blocking` task
+    // finishes — so any stray blocking I/O would hang the process (and
+    // `systemctl stop` with it). The FIFO source no longer uses the blocking
+    // pool, but this keeps shutdown bounded regardless of what gets added
+    // later.
+    std::process::exit(0);
 }
 
 /// Minimal `join_all` replacement so we don't pull in the `futures` crate.

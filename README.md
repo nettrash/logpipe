@@ -10,29 +10,78 @@ The Rust implementation lives in [`app/`](./app).
 ## Usage from the customer's side
 
 Once installed, any local process can ship a log line by simply writing
-to the FIFO:
+to the FIFO. Each newline marks one record.
+
+### Plain text
 
 ```sh
-# Plain text
 echo "hello world" > /dev/logpipe
 
-# Multiple lines from a file
+# Stream a whole file (one line == one document)
 cat my.log > /dev/logpipe
-
-# Structured payload (JSON object on a single line)
-printf '{"level":"error","message":"oom","tag":"checkout"}\n' > /dev/logpipe
-
-# From C / any language
-int fd = open("/dev/logpipe", O_WRONLY);
-write(fd, "msg\n", 4);
-close(fd);
+tail -F /var/log/myapp.log > /dev/logpipe
 ```
 
-- Plain text becomes `{"message": "<line>"}`.
-- JSON-object lines are merged into the document; `"message"` and `"tag"` fields
-  are promoted to the document's top-level fields.
+A plain line `hello world` becomes:
 
-Each newline marks a record boundary.
+```json
+{ "@timestamp": "…", "source": "fifo", "host": "myhost",
+  "tag": "customer", "fifo": "/dev/logpipe", "message": "hello world" }
+```
+
+### Structured fields (JSON document)
+
+Write a **single-line JSON object** and its fields are merged into the
+document. Watch the shell quoting — wrap the whole payload in **single
+quotes** so the inner `"` aren't eaten by the shell:
+
+```sh
+# Right:
+echo '{"level":"error","trace_id":"abc123","message":"oom","tag":"checkout"}' > /dev/logpipe
+
+# Wrong: the shell strips the inner quotes, logpipe sees a non-JSON line
+# and stores it verbatim in "message".
+echo "{"level":"error",...}" > /dev/logpipe
+
+# Already have pretty-printed JSON? Compact it to one line first:
+jq -c . event.json > /dev/logpipe
+```
+
+The first command above indexes:
+
+```json
+{ "@timestamp": "…", "source": "fifo", "host": "myhost", "fifo": "/dev/logpipe",
+  "level": "error", "trace_id": "abc123", "message": "oom", "tag": "checkout" }
+```
+
+Rules for JSON lines:
+
+- All keys are merged onto the document as top-level fields.
+- A string `"message"` / `"tag"` is *promoted* — and `"tag"` overrides the
+  default tag from the config.
+- `@timestamp`, `source`, `host`, and `fifo` are owned by the daemon; copies
+  of these keys in your JSON are ignored. (This is what keeps the indexed
+  document free of duplicate keys, which OpenSearch would otherwise reject.)
+- A line that doesn't parse as a JSON **object** (invalid JSON, a bare array,
+  a number, …) is treated as plain text and stored verbatim in `message`.
+
+### From a program
+
+```python
+import json
+with open("/dev/logpipe", "w") as f:                 # plain line
+    f.write("user logged in\n")
+    f.write(json.dumps({"level": "info", "event": "login",   # JSON line
+                        "user_id": 42, "message": "user logged in",
+                        "tag": "auth"}) + "\n")
+```
+
+```c
+int fd = open("/dev/logpipe", O_WRONLY);
+dprintf(fd, "msg\n");                                          /* plain line */
+dprintf(fd, "{\"level\":\"error\",\"message\":\"oom\"}\n");    /* JSON line  */
+close(fd);
+```
 
 ## What it does
 
@@ -46,7 +95,7 @@ Each newline marks a record boundary.
 
 ## Repository layout
 
-```
+```text
 .
 ├── README.md
 └── app/                       # Rust crate
