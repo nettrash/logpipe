@@ -1,6 +1,6 @@
 [package]
 name = "logpipe"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["nettrash <nettrash@nettrash.me>"]
 description = "Log-forwarding service for Linux: lines written to the /dev/logpipe named pipe (FIFO) are streamed into an OpenSearch endpoint"
@@ -63,6 +63,11 @@ time = { version = "0.3", features = ["serde", "formatting", "macros"] }
 
 # Hostname for tagging events
 hostname = "0.4"
+
+[dev-dependencies]
+# Scoped temp dirs/files for filesystem-touching unit tests (ensure_fifo,
+# Config::load). Cleaned up on drop, so tests don't leak under /tmp.
+tempfile = "3"
 
 [profile.release]
 lto = "thin"

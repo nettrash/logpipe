@@ -125,6 +125,7 @@ pub async fn run(
     let mut lines = reader.lines();
     let default_tag = cfg.tag.clone();
     let fifo_path = cfg.path.clone();
+    let stringify_values = cfg.stringify_values;
 
     loop {
         tokio::select! {
@@ -136,7 +137,13 @@ pub async fn run(
                 match line {
                     Ok(Some(line)) => {
                         if line.is_empty() { continue; }
-                        let event = build_event(&line, default_tag.as_deref(), &host, &fifo_path);
+                        let event = build_event(
+                            &line,
+                            default_tag.as_deref(),
+                            &host,
+                            &fifo_path,
+                            stringify_values,
+                        );
                         if tx.send(event).await.is_err() {
                             info!("event channel closed, fifo source exiting");
                             return Ok(());
@@ -214,11 +221,22 @@ const RESERVED_KEYS: &[&str] = &["@timestamp", "source", "host", "tag", "message
 /// Build an Event from a customer-written line.
 ///
 /// If the line is a JSON object, its fields are merged into the OpenSearch
-/// document, with a string `message` / `tag` promoted to the document's
-/// top-level fields. Keys the daemon owns ([`RESERVED_KEYS`]) are dropped
-/// rather than merged, so the emitted document never has a duplicate key.
-/// Anything that isn't a JSON object becomes a free-form `message`.
-fn build_event(line: &str, default_tag: Option<&str>, host: &str, fifo: &Path) -> Event {
+/// document, with `message` / `tag` promoted to the document's top-level
+/// fields. Keys the daemon owns ([`RESERVED_KEYS`]) are dropped rather than
+/// merged, so the emitted document never has a duplicate key. Anything that
+/// isn't a JSON object becomes a free-form `message`.
+///
+/// When `stringify_values` is `true`, every merged value (including the
+/// promoted `message`/`tag`) is coerced to its JSON-encoded string form
+/// before going into the document — useful when the OpenSearch mapping
+/// expects every field to be a string.
+fn build_event(
+    line: &str,
+    default_tag: Option<&str>,
+    host: &str,
+    fifo: &Path,
+    stringify_values: bool,
+) -> Event {
     let timestamp = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default();
@@ -230,16 +248,19 @@ fn build_event(line: &str, default_tag: Option<&str>, host: &str, fifo: &Path) -
         let mut message: Option<String> = None;
         for (k, v) in obj {
             match k.as_str() {
-                // Promote when it's a string; otherwise keep it as a field
-                // (Event.message/tag stays None, so still only one key).
+                // Promote when it's a string; in stringify mode also promote
+                // non-strings via their JSON form. Otherwise drop it into
+                // `fields` so the Event.message/tag stays None (still one key).
                 "message" => match v {
                     Value::String(s) => message = Some(s),
+                    other if stringify_values => message = Some(coerce_to_string(other)),
                     other => {
                         fields.insert(k, other);
                     }
                 },
                 "tag" => match v {
                     Value::String(s) => tag = Some(s),
+                    other if stringify_values => tag = Some(coerce_to_string(other)),
                     other => {
                         fields.insert(k, other);
                     }
@@ -247,7 +268,12 @@ fn build_event(line: &str, default_tag: Option<&str>, host: &str, fifo: &Path) -
                 // Other daemon-owned keys: ignore the customer's copy.
                 _ if RESERVED_KEYS.contains(&k.as_str()) => {}
                 _ => {
-                    fields.insert(k, v);
+                    let value = if stringify_values {
+                        Value::String(coerce_to_string(v))
+                    } else {
+                        v
+                    };
+                    fields.insert(k, value);
                 }
             }
         }
@@ -276,5 +302,196 @@ fn build_event(line: &str, default_tag: Option<&str>, host: &str, fifo: &Path) -
         tag: default_tag.map(str::to_owned),
         message: Some(line.to_owned()),
         fields,
+    }
+}
+
+/// Render a JSON value as the string that should appear in the document.
+/// Strings are passed through unquoted; everything else is serialized as
+/// compact JSON (`42` → `"42"`, `true` → `"true"`, `null` → `"null"`,
+/// objects/arrays → their JSON text).
+fn coerce_to_string(v: Value) -> String {
+    match v {
+        Value::String(s) => s,
+        other => serde_json::to_string(&other).unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    fn fifo() -> PathBuf {
+        PathBuf::from("/dev/logpipe")
+    }
+
+    #[test]
+    fn plain_line_becomes_message_with_default_tag() {
+        let ev = build_event("hello world", Some("default"), "host1", &fifo(), false);
+        assert_eq!(ev.message.as_deref(), Some("hello world"));
+        assert_eq!(ev.tag.as_deref(), Some("default"));
+        assert_eq!(ev.host, "host1");
+        assert_eq!(ev.source, "fifo");
+        assert_eq!(
+            ev.fields.get("fifo"),
+            Some(&Value::String("/dev/logpipe".into()))
+        );
+    }
+
+    #[test]
+    fn json_object_merges_fields_and_promotes_message_tag() {
+        let line = r#"{"level":"error","trace_id":"abc","message":"oom","tag":"checkout"}"#;
+        let ev = build_event(line, Some("default"), "host1", &fifo(), false);
+        assert_eq!(ev.message.as_deref(), Some("oom"));
+        assert_eq!(ev.tag.as_deref(), Some("checkout"));
+        assert_eq!(ev.fields.get("level"), Some(&json!("error")));
+        assert_eq!(ev.fields.get("trace_id"), Some(&json!("abc")));
+        assert!(!ev.fields.contains_key("message"));
+        assert!(!ev.fields.contains_key("tag"));
+    }
+
+    #[test]
+    fn reserved_daemon_keys_in_payload_are_dropped() {
+        let line = r#"{"@timestamp":"bogus","source":"evil","host":"evil","fifo":"evil","keep":1}"#;
+        let ev = build_event(line, None, "host1", &fifo(), false);
+        assert_eq!(ev.host, "host1");
+        assert_eq!(ev.source, "fifo");
+        assert_eq!(
+            ev.fields.get("fifo"),
+            Some(&Value::String("/dev/logpipe".into()))
+        );
+        assert!(!ev.fields.contains_key("@timestamp"));
+        assert!(!ev.fields.contains_key("source"));
+        assert!(!ev.fields.contains_key("host"));
+        assert_eq!(ev.fields.get("keep"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn non_string_message_tag_fall_back_to_fields_when_stringify_off() {
+        // Event.message starts as None; Event.tag keeps the default_tag.
+        // The non-string customer values end up in `fields` so the document
+        // is still single-keyed.
+        let line = r#"{"message":{"nested":1},"tag":42}"#;
+        let ev = build_event(line, Some("default"), "host1", &fifo(), false);
+        assert!(ev.message.is_none());
+        assert_eq!(ev.tag.as_deref(), Some("default"));
+        assert_eq!(ev.fields.get("message"), Some(&json!({"nested": 1})));
+        assert_eq!(ev.fields.get("tag"), Some(&json!(42)));
+    }
+
+    #[test]
+    fn invalid_json_is_stored_verbatim_in_message() {
+        let line = r#"{"oops": this isn't json}"#;
+        let ev = build_event(line, None, "host1", &fifo(), false);
+        assert_eq!(ev.message.as_deref(), Some(line));
+        assert!(ev.tag.is_none());
+    }
+
+    #[test]
+    fn bare_array_is_treated_as_plain_text() {
+        let line = "[1,2,3]";
+        let ev = build_event(line, Some("default"), "host1", &fifo(), false);
+        assert_eq!(ev.message.as_deref(), Some("[1,2,3]"));
+        assert_eq!(ev.tag.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn stringify_values_coerces_scalars_and_objects() {
+        let line = r#"{"n":42,"b":true,"nil":null,"obj":{"a":1},"arr":[1,2],"s":"already"}"#;
+        let ev = build_event(line, None, "host1", &fifo(), true);
+        assert_eq!(ev.fields.get("n"), Some(&json!("42")));
+        assert_eq!(ev.fields.get("b"), Some(&json!("true")));
+        assert_eq!(ev.fields.get("nil"), Some(&json!("null")));
+        assert_eq!(ev.fields.get("obj"), Some(&json!(r#"{"a":1}"#)));
+        assert_eq!(ev.fields.get("arr"), Some(&json!("[1,2]")));
+        assert_eq!(ev.fields.get("s"), Some(&json!("already")));
+    }
+
+    #[test]
+    fn stringify_values_promotes_non_string_message_tag() {
+        let line = r#"{"message":{"a":1},"tag":42}"#;
+        let ev = build_event(line, Some("default"), "host1", &fifo(), true);
+        assert_eq!(ev.message.as_deref(), Some(r#"{"a":1}"#));
+        assert_eq!(ev.tag.as_deref(), Some("42"));
+        assert!(!ev.fields.contains_key("message"));
+        assert!(!ev.fields.contains_key("tag"));
+    }
+
+    #[test]
+    fn stringify_values_does_not_double_quote_strings() {
+        let line = r#"{"s":"plain"}"#;
+        let ev = build_event(line, None, "host1", &fifo(), true);
+        assert_eq!(ev.fields.get("s"), Some(&json!("plain")));
+    }
+
+    #[test]
+    fn coerce_to_string_shapes() {
+        assert_eq!(coerce_to_string(json!("hi")), "hi");
+        assert_eq!(coerce_to_string(json!(42)), "42");
+        assert_eq!(coerce_to_string(json!(true)), "true");
+        assert_eq!(coerce_to_string(json!(null)), "null");
+        assert_eq!(coerce_to_string(json!({"a":1})), r#"{"a":1}"#);
+        assert_eq!(coerce_to_string(json!([1, 2, 3])), "[1,2,3]");
+    }
+
+    // ensure_fifo tests use a real temp directory because the function shells
+    // out to mkfifo(2) and stat(2). Each test creates its own FIFO path so
+    // they don't race when run in parallel.
+    mod ensure_fifo {
+        use super::super::ensure_fifo;
+        use std::fs::{self, File};
+        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+        use tempfile::tempdir;
+
+        #[test]
+        fn creates_fifo_at_requested_path_with_requested_mode() {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("fifo");
+            ensure_fifo(&path, 0o622).expect("ensure_fifo");
+
+            let meta = fs::symlink_metadata(&path).unwrap();
+            assert!(meta.file_type().is_fifo(), "should be a fifo");
+            // umask can mask bits at mkfifo time, but ensure_fifo re-applies
+            // the requested mode with set_permissions afterwards, so the
+            // effective perms should match exactly.
+            assert_eq!(meta.permissions().mode() & 0o7777, 0o622);
+        }
+
+        #[test]
+        fn is_idempotent_and_resets_mode_on_existing_fifo() {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("fifo");
+
+            // First call creates with 0o600.
+            ensure_fifo(&path, 0o600).expect("first ensure_fifo");
+            // Second call with a different mode should keep the same FIFO
+            // (no error) but re-apply the new permissions.
+            ensure_fifo(&path, 0o644).expect("second ensure_fifo");
+
+            let meta = fs::symlink_metadata(&path).unwrap();
+            assert!(meta.file_type().is_fifo());
+            assert_eq!(meta.permissions().mode() & 0o7777, 0o644);
+        }
+
+        #[test]
+        fn errors_when_path_exists_and_is_not_a_fifo() {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("regular");
+            File::create(&path).unwrap();
+
+            let err = ensure_fifo(&path, 0o622).unwrap_err();
+            assert!(format!("{err:#}").contains("not a FIFO"));
+        }
+
+        #[test]
+        fn creates_missing_parent_directory() {
+            let dir = tempdir().unwrap();
+            let nested = dir.path().join("a/b/c");
+            let path = nested.join("fifo");
+
+            ensure_fifo(&path, 0o622).expect("ensure_fifo with missing parent");
+            assert!(fs::symlink_metadata(&path).unwrap().file_type().is_fifo());
+        }
     }
 }

@@ -64,6 +64,10 @@ Rules for JSON lines:
   document free of duplicate keys, which OpenSearch would otherwise reject.)
 - A line that doesn't parse as a JSON **object** (invalid JSON, a bare array,
   a number, …) is treated as plain text and stored verbatim in `message`.
+- Set `sources.fifo.stringify_values = true` to coerce every merged field
+  value to its JSON-encoded string form (`42` → `"42"`, `{"a":1}` →
+  `"{\"a\":1}"`). Use this when your OpenSearch mapping is keyword-only and
+  you want to avoid `mapper_parsing_exception` from cross-event type drift.
 
 ### From a program
 

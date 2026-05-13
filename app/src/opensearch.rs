@@ -220,3 +220,120 @@ fn inspect_bulk_response(body: &str) -> Option<(Vec<usize>, String)> {
     }
     Some((failed_indices, sample))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Map};
+    use std::io::Read as _;
+
+    fn event(message: &str) -> Event {
+        Event {
+            timestamp: "2026-05-13T00:00:00Z".to_string(),
+            source: "fifo",
+            host: "h".to_string(),
+            tag: None,
+            message: Some(message.to_string()),
+            fields: Map::new(),
+        }
+    }
+
+    #[test]
+    fn build_bulk_body_produces_action_doc_pairs_with_trailing_newline() {
+        let events = vec![event("a"), event("b")];
+        let body = build_bulk_body("idx", &events).expect("build");
+        let text = String::from_utf8(body).expect("utf8");
+
+        // _bulk requires a trailing newline; the body must end with one.
+        assert!(text.ends_with('\n'));
+
+        // Two events ⇒ 4 NDJSON rows: action, doc, action, doc.
+        let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+        assert_eq!(lines.len(), 4);
+
+        let action: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(action, json!({"index": {"_index": "idx"}}));
+        assert_eq!(lines[0], lines[2], "action line is the same every event");
+
+        let doc_a: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(doc_a["message"], json!("a"));
+        let doc_b: serde_json::Value = serde_json::from_str(lines[3]).unwrap();
+        assert_eq!(doc_b["message"], json!("b"));
+    }
+
+    #[test]
+    fn build_bulk_body_empty_events_produces_empty_body() {
+        let body = build_bulk_body("idx", &[]).expect("build");
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn gzip_body_roundtrips() {
+        let raw = b"hello world ".repeat(200);
+        let compressed = gzip_body(raw.clone()).expect("gzip");
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(&compressed[..])
+            .read_to_end(&mut decoded)
+            .expect("ungzip");
+        assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn inspect_bulk_response_returns_none_when_no_errors() {
+        let body = r#"{"errors":false,"items":[{"index":{"status":201}}]}"#;
+        assert!(inspect_bulk_response(body).is_none());
+    }
+
+    #[test]
+    fn inspect_bulk_response_collects_failed_item_indices_and_sample() {
+        let body = r#"{
+            "errors": true,
+            "items": [
+                {"index": {"status": 201}},
+                {"index": {"status": 400, "error": {"type":"mapper_parsing_exception","reason":"bad field"}}},
+                {"index": {"status": 201}},
+                {"index": {"status": 400, "error": {"type":"x","reason":"y"}}}
+            ]
+        }"#;
+        let (indices, sample) = inspect_bulk_response(body).expect("errored response");
+        assert_eq!(indices, vec![1, 3]);
+        // Sample is taken from the first failing item.
+        assert_eq!(sample, "mapper_parsing_exception: bad field");
+    }
+
+    #[test]
+    fn inspect_bulk_response_treats_unattributable_errors_as_whole_batch_failure() {
+        // `errors: true` but no per-item .error — we can't attribute, so the
+        // caller diverts everything.
+        let body = r#"{"errors":true,"items":[{"index":{"status":500}},{"index":{"status":500}}]}"#;
+        let (indices, sample) = inspect_bulk_response(body).expect("errored response");
+        assert_eq!(indices, vec![0, 1]);
+        // Fallback sample is the raw body prefix.
+        assert!(sample.starts_with("{\"errors\":true"));
+    }
+
+    #[test]
+    fn inspect_bulk_response_unattributable_with_empty_items_marks_one_index() {
+        // Defensive case: `errors: true` with no items at all. We pick at
+        // least one index so the caller still treats the batch as failed.
+        let body = r#"{"errors":true,"items":[]}"#;
+        let (indices, _sample) = inspect_bulk_response(body).expect("errored response");
+        assert_eq!(indices, vec![0]);
+    }
+
+    #[test]
+    fn inspect_bulk_response_handles_missing_type_and_reason() {
+        let body = r#"{
+            "errors": true,
+            "items": [{"index": {"status": 400, "error": {}}}]
+        }"#;
+        let (indices, sample) = inspect_bulk_response(body).expect("errored response");
+        assert_eq!(indices, vec![0]);
+        assert_eq!(sample, "error: ");
+    }
+
+    #[test]
+    fn inspect_bulk_response_returns_none_on_malformed_json() {
+        assert!(inspect_bulk_response("not json").is_none());
+    }
+}

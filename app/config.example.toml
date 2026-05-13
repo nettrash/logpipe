@@ -63,3 +63,11 @@ mode = 0o622
 # Default tag attached to every event. Customer-written JSON lines can
 # override it with their own "tag" field.
 tag = "customer"
+
+# Coerce every customer-supplied field value to its JSON-encoded string form
+# before sending it to OpenSearch. Off by default — JSON values keep their
+# native types (numbers stay numbers, objects stay objects). Turn this on if
+# you've been bitten by mapper_parsing_exception because the same field
+# arrives as different types from different writers; with this flag set,
+# 42 becomes "42", true becomes "true", and {"a":1} becomes "{\"a\":1}".
+# stringify_values = false

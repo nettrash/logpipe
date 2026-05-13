@@ -1,3 +1,16 @@
+2026-05-13          v0.3.0
+
+                    Config: new optional sources.fifo.stringify_values
+                    knob. When true, every merged field value (and any
+                    non-string `message`/`tag`) is coerced to its JSON-
+                    encoded string form before going to OpenSearch — so
+                    42 becomes "42", true becomes "true", and {"a":1}
+                    becomes "{\"a\":1}". Avoids mapper_parsing_exception
+                    on keyword-only mappings when the same field arrives
+                    as different types from different writers. Defaults
+                    to false; existing deployments are unaffected.
+
+
 2026-05-13          v0.2.0
 
                     Journal fallback: events that OpenSearch refused
