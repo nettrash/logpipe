@@ -5,6 +5,7 @@
 mod batcher;
 mod config;
 mod event;
+mod journal;
 mod opensearch;
 mod sources;
 
@@ -64,7 +65,9 @@ async fn main() -> Result<()> {
         .and_then(|s| s.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let (tx, rx) = mpsc::channel(cfg.batch.max_events.saturating_mul(2).max(1024));
+    let channel_capacity = cfg.batch.effective_channel_capacity();
+    info!(channel_capacity, "event channel sized");
+    let (tx, rx) = mpsc::channel(channel_capacity);
     let cancel = CancellationToken::new();
 
     let mut handles = Vec::new();

@@ -1,3 +1,25 @@
+2026-05-13          v0.2.0
+
+                    Journal fallback: events that OpenSearch refused
+                    after retries, or rejected at the per-item level,
+                    are re-emitted on stderr as warn-level tracing
+                    lines prefixed `logpipe-fallback` so systemd ships
+                    them to the unit's journal instead of dropping
+                    them silently.
+
+                    Performance: _bulk request bodies are now gzip-
+                    compressed (Content-Encoding: gzip) and built
+                    once per batch as bytes::Bytes, so retries no
+                    longer memcpy the (potentially multi-MB) payload.
+
+                    Config: new optional batch.channel_capacity knob
+                    controls the in-process queue depth between the
+                    FIFO reader and the flusher. Default raised from
+                    max_events * 2 (min 1024) to max_events * 8 so a
+                    single slow flush no longer immediately backpres-
+                    sures customer writers via the kernel pipe.
+
+
 2026-05-12          v0.1.0
 
                     Initial version.

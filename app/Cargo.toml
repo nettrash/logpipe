@@ -1,6 +1,6 @@
 [package]
 name = "logpipe"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["nettrash <nettrash@nettrash.me>"]
 description = "Log-forwarding service for Linux: lines written to the /dev/logpipe named pipe (FIFO) are streamed into an OpenSearch endpoint"
@@ -35,6 +35,14 @@ reqwest = { version = "0.12", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+
+# Cheap, ref-counted byte buffers — used to retry _bulk POSTs without
+# re-copying the (potentially multi-MB) gzipped body each attempt.
+bytes = "1"
+
+# gzip the _bulk request body. reqwest's `gzip` feature only handles the
+# response side; we compress outgoing bodies ourselves.
+flate2 = "1"
 
 # Direct mkfifo(2) syscall + unix file-type helpers
 libc = "0.2"

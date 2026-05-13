@@ -68,6 +68,26 @@ pub struct BatchConfig {
     /// Maximum time between flushes, regardless of fill level.
     #[serde(default = "default_batch_flush_secs")]
     pub flush_secs: u64,
+
+    /// Capacity of the in-process channel that connects the FIFO reader
+    /// to the OpenSearch flusher. When full, the FIFO reader blocks —
+    /// which then translates into kernel-pipe backpressure on customer
+    /// writers. Bigger values absorb longer slow-sink stalls at the cost
+    /// of extra memory (~one Event per slot). When unset, defaults to
+    /// `max_events * 8`, which gives the flusher room to keep one batch
+    /// in flight while several more accumulate behind it.
+    #[serde(default)]
+    pub channel_capacity: Option<usize>,
+}
+
+impl BatchConfig {
+    /// Effective channel capacity: respects `channel_capacity` if set,
+    /// otherwise derives one from `max_events`.
+    pub fn effective_channel_capacity(&self) -> usize {
+        self.channel_capacity
+            .unwrap_or_else(|| self.max_events.saturating_mul(8))
+            .max(1)
+    }
 }
 
 impl Default for BatchConfig {
@@ -75,6 +95,7 @@ impl Default for BatchConfig {
         Self {
             max_events: default_batch_max_events(),
             flush_secs: default_batch_flush_secs(),
+            channel_capacity: None,
         }
     }
 }

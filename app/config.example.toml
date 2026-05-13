@@ -27,6 +27,12 @@ request_timeout_secs = 30
 max_events = 500
 # Maximum time between flushes, regardless of fill level.
 flush_secs = 5
+# In-process queue size between the FIFO reader and the OpenSearch
+# flusher. When full, the FIFO reader stops draining and the kernel's
+# pipe buffer applies backpressure to customer writers. Bigger values
+# absorb longer OpenSearch hiccups at the cost of memory (one Event
+# per slot). Omit to use the default (max_events * 8).
+# channel_capacity = 4000
 
 
 # ---- Ingress -------------------------------------------------------------

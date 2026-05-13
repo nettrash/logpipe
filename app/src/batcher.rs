@@ -10,6 +10,7 @@ use tracing::{debug, error, info};
 
 use crate::config::{BatchConfig, OpenSearchConfig};
 use crate::event::Event;
+use crate::journal;
 use crate::opensearch::OpenSearchClient;
 
 pub async fn run(
@@ -69,8 +70,23 @@ async fn flush(client: &OpenSearchClient, os_cfg: &OpenSearchConfig, buf: &mut V
     }
     let n = buf.len();
     match client.send(buf, &os_cfg.username, &os_cfg.password).await {
-        Ok(()) => debug!(events = n, "flushed batch"),
-        Err(err) => error!(error = %err, events = n, "dropping batch after retries exhausted"),
+        Ok(rejected) if rejected.is_empty() => debug!(events = n, "flushed batch"),
+        Ok(rejected) => {
+            // Whole-batch HTTP success but some documents were rejected at
+            // the per-item layer (mapping errors, malformed docs, …).
+            // Divert just the rejected events to the journal so the
+            // payload is recoverable.
+            let dropped = rejected.iter().filter_map(|&i| buf.get(i));
+            journal::fallback(dropped, "opensearch rejected individual documents");
+        }
+        Err(err) => {
+            error!(
+                error = %err,
+                events = n,
+                "OpenSearch unreachable, diverting batch to journal"
+            );
+            journal::fallback(buf.iter(), "opensearch retries exhausted");
+        }
     }
     buf.clear();
 }
